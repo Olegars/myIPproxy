@@ -1,0 +1,8 @@
+if(NOT DEFINED SRC OR NOT DEFINED DST)
+    return()
+endif()
+foreach(name WinDivert.dll WinDivert64.sys)
+    if(EXISTS "${SRC}/${name}")
+        execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SRC}/${name}" "${DST}/${name}")
+    endif()
+endforeach()
