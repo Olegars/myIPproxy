@@ -15,7 +15,9 @@ ProcInfo processForUdp(quint16 localPort, bool ipv6, bool refresh = false);
 QString processNameForPid(quint32 pid);
 void setAutostart(bool enabled);
 bool autostartEnabled();
+bool proxyServiceInstalled();
 bool proxyServiceRunning();
+bool startProxyService(QString *error = nullptr, int waitMs = 8000);
 bool installProxyService(QString *error);
 bool uninstallProxyService(QString *error);
 

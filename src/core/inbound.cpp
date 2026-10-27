@@ -11,6 +11,7 @@
 #include <QDateTime>
 #include <QHash>
 #include <QNetworkProxy>
+#include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
@@ -382,9 +383,12 @@ private:
             return;
         }
         connect(flow, &Flow::finished, this, [this] { pipe_->abort(); });
-        auto prepared = [this, flow, host, port](Decision decision, Endpoint ep) {
-            if (!flow)
+        const QPointer<TcpSession> alive(this);
+        const QPointer<Flow> flowAlive(flow);
+        auto prepared = [this, alive, flowAlive, host, port](Decision decision, Endpoint ep) {
+            if (!alive || !flowAlive)
                 return;
+            Flow *flow = flowAlive.data();
             QString target = ep.host.isEmpty() ? host : ep.host;
             const QString via = describeVia(decision);
             const QString dest = QString::fromUtf8("%1:%2").arg(target).arg(port);
@@ -407,8 +411,11 @@ private:
                                              .arg(via));
             }
             auto *dialer = new Dialer(decision.hops, target, port, remoteDns(), this);
-            connect(dialer, &Dialer::established, this, [this, dialer, flow](Pipe *upstream) {
+            connect(dialer, &Dialer::established, this, [this, dialer, flowAlive](Pipe *upstream) {
                 dialer->deleteLater();
+                if (!flowAlive)
+                    return;
+                Flow *flow = flowAlive.data();
                 if (!upstream) {
                     reply(0x01, true);
                     flow->setStatus(QString::fromUtf8("Ошибка"), QString::fromUtf8("нет канала"));
@@ -429,8 +436,13 @@ private:
                 flow->attach(pipe_, upstream);
                 setParent(flow);
             });
-            connect(dialer, &Dialer::failed, this, [this, dialer, flow](const QString &error) {
+            connect(dialer, &Dialer::failed, this, [this, dialer, flowAlive](const QString &error) {
                 dialer->deleteLater();
+                if (!flowAlive) {
+                    pipe_->abort();
+                    return;
+                }
+                Flow *flow = flowAlive.data();
                 Logger::instance()->error(QString::fromUtf8("Не удалось открыть %1: %2")
                                               .arg(flow->snapshot().destination, error));
                 reply(0x05, true);

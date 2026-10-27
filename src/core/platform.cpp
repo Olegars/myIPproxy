@@ -11,10 +11,12 @@
 #  include <iphlpapi.h>
 #  include <wininet.h>
 #  include <winsvc.h>
+#  include <aclapi.h>
 #endif
 
 #include "platform.h"
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -392,9 +394,76 @@ QString serviceError()
 {
     return QString::fromUtf8("код %1").arg(GetLastError());
 }
+
+void armService(SC_HANDLE service)
+{
+    SC_ACTION actions[3];
+    for (SC_ACTION &action : actions) {
+        action.Type = SC_ACTION_RESTART;
+        action.Delay = 5000;
+    }
+    SERVICE_FAILURE_ACTIONSW fa{};
+    fa.dwResetPeriod = 24 * 60 * 60;
+    fa.cActions = 3;
+    fa.lpsaActions = actions;
+    ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, &fa);
+    SERVICE_FAILURE_ACTIONS_FLAG flag{};
+    flag.fFailureActionsOnNonCrashFailures = TRUE;
+    ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &flag);
+
+    DWORD needed = 0;
+    QueryServiceObjectSecurity(service, DACL_SECURITY_INFORMATION, nullptr, 0, &needed);
+    if (needed < sizeof(SECURITY_DESCRIPTOR))
+        return;
+    QByteArray sd(int(needed), 0);
+    if (!QueryServiceObjectSecurity(service, DACL_SECURITY_INFORMATION, sd.data(), DWORD(sd.size()), &needed))
+        return;
+    BOOL present = FALSE;
+    BOOL defaulted = FALSE;
+    PACL dacl = nullptr;
+    if (!GetSecurityDescriptorDacl(reinterpret_cast<PSECURITY_DESCRIPTOR>(sd.data()), &present, &dacl, &defaulted))
+        return;
+    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+    PSID users = nullptr;
+    if (!AllocateAndInitializeSid(&nt, 1, SECURITY_INTERACTIVE_RID, 0, 0, 0, 0, 0, 0, 0, &users))
+        return;
+    EXPLICIT_ACCESSW access{};
+    access.grfAccessPermissions = SERVICE_START | SERVICE_QUERY_STATUS;
+    access.grfAccessMode = GRANT_ACCESS;
+    access.grfInheritance = NO_INHERITANCE;
+    access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+    access.Trustee.ptstrName = static_cast<LPWSTR>(users);
+    PACL updated = nullptr;
+    if (SetEntriesInAclW(1, &access, present ? dacl : nullptr, &updated) == ERROR_SUCCESS) {
+        SECURITY_DESCRIPTOR abs;
+        InitializeSecurityDescriptor(&abs, SECURITY_DESCRIPTOR_REVISION);
+        SetSecurityDescriptorDacl(&abs, TRUE, updated, FALSE);
+        SetServiceObjectSecurity(service, DACL_SECURITY_INFORMATION, &abs);
+        LocalFree(updated);
+    }
+    FreeSid(users);
+}
 #endif
 
 } // namespace
+
+bool proxyServiceInstalled()
+{
+#ifdef Q_OS_WIN
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm)
+        return false;
+    SC_HANDLE service = OpenServiceW(scm, L"stopRKN", SERVICE_QUERY_STATUS);
+    const bool installed = service != nullptr;
+    if (service)
+        CloseServiceHandle(service);
+    CloseServiceHandle(scm);
+    return installed;
+#else
+    return false;
+#endif
+}
 
 bool proxyServiceRunning()
 {
@@ -416,6 +485,60 @@ bool proxyServiceRunning()
     CloseServiceHandle(scm);
     return running;
 #else
+    return false;
+#endif
+}
+
+bool startProxyService(QString *error, int waitMs)
+{
+#ifdef Q_OS_WIN
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm) {
+        if (error)
+            *error = serviceError();
+        return false;
+    }
+    SC_HANDLE service = OpenServiceW(scm, L"stopRKN", SERVICE_QUERY_STATUS | SERVICE_START);
+    if (!service) {
+        const DWORD err = GetLastError();
+        CloseServiceHandle(scm);
+        if (error && err != ERROR_SERVICE_DOES_NOT_EXIST)
+            *error = QString::fromUtf8("код %1").arg(err);
+        return false;
+    }
+    bool started = false;
+    const int steps = qMax(1, waitMs / 200);
+    for (int i = 0; i < steps; ++i) {
+        SERVICE_STATUS_PROCESS state{};
+        DWORD bytes = 0;
+        if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                                  reinterpret_cast<BYTE *>(&state), sizeof(state), &bytes))
+            break;
+        if (state.dwCurrentState == SERVICE_RUNNING) {
+            started = true;
+            break;
+        }
+        if (state.dwCurrentState == SERVICE_STOPPED) {
+            if (!StartServiceW(service, 0, nullptr) && GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
+                if (error)
+                    *error = serviceError();
+                break;
+            }
+            if (waitMs <= 0) {
+                started = true;
+                break;
+            }
+        }
+        if (waitMs <= 0)
+            break;
+        Sleep(200);
+    }
+    CloseServiceHandle(service);
+    CloseServiceHandle(scm);
+    return started;
+#else
+    Q_UNUSED(error);
+    Q_UNUSED(waitMs);
     return false;
 #endif
 }
@@ -453,6 +576,7 @@ bool installProxyService(QString *error)
         CloseServiceHandle(scm);
         return false;
     }
+    armService(service);
     if (!StartServiceW(service, 0, nullptr) && GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
         if (error)
             *error = serviceError();

@@ -1,3 +1,4 @@
+#include "crashlog.h"
 #include "logger.h"
 
 #include <QCoreApplication>
@@ -51,6 +52,8 @@ void Logger::log(LogLevel level, const QString &text)
         while (lines_.size() > limit_)
             lines_.removeFirst();
     }
+    if (level == LogLevel::Warning || level == LogLevel::Error)
+        CrashLog::write(level == LogLevel::Error ? QStringLiteral("ERROR") : QStringLiteral("WARN"), text);
     if (QThread::currentThread() == thread()) {
         emit logged(level, time, text);
         return;

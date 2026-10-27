@@ -25,6 +25,8 @@ set(CORE_SOURCES
     src/core/types.h
     src/core/logger.h
     src/core/logger.cpp
+    src/core/crashlog.h
+    src/core/crashlog.cpp
     src/core/secretstore.h
     src/core/secretstore.cpp
     src/core/cidr.h
@@ -65,6 +67,8 @@ set(CORE_SOURCES
     src/core/engine.cpp
     src/core/hub.h
     src/core/hub.cpp
+    src/core/killswitch.h
+    src/core/killswitch.cpp
     src/core/proxytest.h
     src/core/proxytest.cpp
 )
@@ -76,7 +80,7 @@ if(MINGW)
 endif()
 target_link_libraries(myipproxy_core PUBLIC Qt6::Core Qt6::Network OpenSSL::Crypto)
 if(WIN32)
-    target_link_libraries(myipproxy_core PUBLIC ws2_32 iphlpapi crypt32 wininet advapi32)
+    target_link_libraries(myipproxy_core PUBLIC ws2_32 iphlpapi crypt32 wininet advapi32 fwpuclnt)
 endif()
 target_compile_definitions(myipproxy_core PRIVATE
     QT_NO_CAST_FROM_ASCII

@@ -62,6 +62,9 @@ private:
     QAbstractTableModel *ruleModel_ = nullptr;
     bool quit_ = false;
     bool trayHintShown_ = false;
+    bool serviceInstalled_ = false;
+    bool serviceRunning_ = false;
+    bool serviceAlertShown_ = false;
     int logFilter_ = 0;
     QString logSearch_;
 };

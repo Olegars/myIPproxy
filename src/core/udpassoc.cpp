@@ -7,6 +7,8 @@
 #include "ruleengine.h"
 #include "socksutil.h"
 
+#include <QPointer>
+
 namespace qpr {
 
 UdpAssoc::UdpAssoc(QUdpSocket *socket, Prepare prepare, bool remoteDns, Flow *flow, QObject *parent)
@@ -76,7 +78,10 @@ void UdpAssoc::handleClientPacket(const QByteArray &packet)
     endpoint.udp = true;
     if (isIpAddress(host))
         endpoint.ip = QHostAddress(host);
-    auto go = [this, host, port, payload](Decision decision, Endpoint) {
+    const QPointer<UdpAssoc> alive(this);
+    auto go = [alive, host, port, payload](Decision decision, Endpoint) {
+        if (!alive)
+            return;
         if (decision.needIp)
             decision.action = RuleAction::Direct;
         if (decision.action == RuleAction::Block) {
@@ -87,15 +92,15 @@ void UdpAssoc::handleClientPacket(const QByteArray &packet)
             && decision.hops.first().type == ProxyType::Socks5
             && !decision.hops.first().shield;
         if (decision.action == RuleAction::Direct || decision.hops.isEmpty()) {
-            sendDirect(host, port, payload, decision);
+            alive->sendDirect(host, port, payload, decision);
             return;
         }
         if (plainSocks) {
-            sendViaSocks(decision.hops.first(), host, port, payload);
+            alive->sendViaSocks(decision.hops.first(), host, port, payload);
             return;
         }
-        if (!warned_) {
-            warned_ = true;
+        if (!alive->warned_) {
+            alive->warned_ = true;
             Logger::instance()->warn(QString::fromUtf8(
                 "UDP через щит или цепочку пока не проксируется — пакет отброшен"));
         }

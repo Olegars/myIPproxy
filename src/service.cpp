@@ -9,8 +9,10 @@
 #  include <winsvc.h>
 #endif
 
+#include "core/crashlog.h"
 #include "core/engine.h"
 #include "core/hub.h"
+#include "core/killswitch.h"
 #include "core/logger.h"
 #include "core/platform.h"
 
@@ -60,16 +62,21 @@ void WINAPI serviceMain(DWORD, LPWSTR *)
     QCoreApplication::setApplicationName(QStringLiteral("stopRKN"));
     QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
     QNetworkProxyFactory::setUseSystemConfiguration(false);
+    CrashLog::installQt();
+    CrashLog::write(QStringLiteral("СЛУЖБА"), QString::fromUtf8("запущена"));
     Engine engine;
     engine.setServiceMode(true);
     engine.load();
     engine.start();
     HubServer hub(&engine);
     hub.start();
+    armKillSwitch();
     Logger::instance()->info(QString::fromUtf8("Служба stopRKN запущена"));
     report(SERVICE_RUNNING);
     app.exec();
     engine.stop();
+    disarmKillSwitch();
+    CrashLog::write(QStringLiteral("СЛУЖБА"), QString::fromUtf8("остановлена"));
     g_app = nullptr;
     report(SERVICE_STOPPED);
 }
@@ -109,6 +116,7 @@ int uninstallServiceCommand()
     char arg0[] = "stopRKN";
     char *argv[] = {arg0, nullptr};
     QCoreApplication app(argc, argv);
+    disarmKillSwitch();
     QString error;
     return uninstallProxyService(&error) ? 0 : 1;
 }

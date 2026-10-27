@@ -47,14 +47,62 @@ Filename: "{app}\stopRKN.exe"; Parameters: "--uninstall-service"; Flags: runhidd
 russian.WelcomeLabel2=Программа будет установлена вместе со службой перехвата. Окно после этого открывается без прав администратора. Настройки и правила сохраняются в C:\ProgramData\stopRKN и при удалении не стираются.
 
 [Code]
+function CreateFileW(lpFileName: String; dwDesiredAccess, dwShareMode: Cardinal;
+  lpSecurityAttributes: Cardinal; dwCreationDisposition, dwFlagsAndAttributes: Cardinal;
+  hTemplateFile: Cardinal): Cardinal;
+  external 'CreateFileW@kernel32.dll stdcall';
+function CloseHandle(hObject: Cardinal): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function FileLocked(const Path: String): Boolean;
+var
+  Handle: Cardinal;
+begin
+  if not FileExists(Path) then begin
+    Result := False;
+    Exit;
+  end;
+  Handle := CreateFileW(Path, $40000000, 0, 0, 3, $80, 0);
+  if Handle = $FFFFFFFF then
+    Result := True
+  else begin
+    CloseHandle(Handle);
+    Result := False;
+  end;
+end;
+
+procedure ReleaseDivert;
+var
+  ResultCode, I: Integer;
+  SysPath: String;
+begin
+  SysPath := ExpandConstant('{app}\WinDivert64.sys');
+  Exec(ExpandConstant('{sys}\sc.exe'), 'failure stopRKN reset= 0 actions= /', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\sc.exe'), 'config stopRKN start= disabled', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\sc.exe'), 'stop stopRKN', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  for I := 1 to 40 do begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM stopRKN.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM myIPproxy.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM myIPproxy-rules.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM myIPproxy-new.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop WinDivert', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop WinDivert14', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(500);
+    if not FileLocked(SysPath) then
+      Exit;
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
-  Result := '';
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM myIPproxy.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM myIPproxy-rules.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM myIPproxy-new.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM stopRKN.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(400);
+  ReleaseDivert;
+  if FileLocked(ExpandConstant('{app}\WinDivert64.sys')) then begin
+    Exec(ExpandConstant('{sys}\sc.exe'), 'config stopRKN start= auto', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'failure stopRKN reset= 86400 actions= restart/5000/restart/5000/restart/5000', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'start stopRKN', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Result := 'WinDivert64.sys всё ещё занят. Закройте stopRKN и повторите установку.';
+  end else
+    Result := '';
 end;

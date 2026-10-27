@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 
 #include "configstore.h"
+#include "crashlog.h"
 #include "dialogs.h"
 #include "hub.h"
 #include "logger.h"
@@ -17,6 +18,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -36,6 +38,7 @@
 #include <QTableView>
 #include <QTimer>
 #include <QToolBar>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #ifdef Q_OS_WIN
@@ -132,6 +135,29 @@ public:
 QIcon shieldIcon()
 {
     static const QIcon icon(QStringLiteral(":/shield.ico"));
+    return icon;
+}
+
+QIcon serviceDownIcon()
+{
+    QIcon icon;
+    for (int side : {16, 20, 24, 32, 48}) {
+        QPixmap pm(side, side);
+        pm.fill(Qt::transparent);
+        QPainter painter(&pm);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(196, 30, 30));
+        painter.drawEllipse(QRectF(0.5, 0.5, side - 1.0, side - 1.0));
+        painter.setPen(QPen(Qt::white, qMax(2.0, side / 7.0), Qt::SolidLine, Qt::RoundCap));
+        const qreal cx = side / 2.0;
+        painter.drawLine(QPointF(cx, side * 0.22), QPointF(cx, side * 0.58));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::white);
+        const qreal dot = qMax(2.0, side / 5.5);
+        painter.drawEllipse(QPointF(cx, side * 0.76), dot / 2.0, dot / 2.0);
+        icon.addPixmap(pm);
+    }
     return icon;
 }
 
@@ -485,14 +511,22 @@ MainWindow::MainWindow(QWidget *parent)
         if (!engine_.delegated())
             return;
         engine_.setDelegated(false);
-        engine_.start();
-        if (serviceAction_) {
-            serviceAction_->setEnabled(true);
-            serviceAction_->setText(QString::fromUtf8("Установить службу"));
-        }
-        Logger::instance()->error(QString::fromUtf8(
-            "Служба остановилась. Прокси для браузера работает из окна, перехват программ недоступен."));
-        updateTray();
+        engine_.releasePorts();
+        QTimer::singleShot(1500, this, [this] {
+            if (startProxyService(nullptr, 0) && hub_->waitForService(6000)) {
+                attachService();
+                updateTray();
+                return;
+            }
+            engine_.start();
+            if (serviceAction_) {
+                serviceAction_->setEnabled(true);
+                serviceAction_->setText(QString::fromUtf8("Установить службу"));
+            }
+            Logger::instance()->error(QString::fromUtf8(
+                "Служба остановилась. Прокси для браузера работает из окна, перехват программ недоступен."));
+            updateTray();
+        });
     });
     attachService();
     bindEngine();
@@ -518,6 +552,7 @@ void MainWindow::buildUi()
     routingAction_->setCheckable(true);
     connect(routingAction_, &QAction::triggered, this, &MainWindow::toggleRouting);
     auto *clearLog = new QAction(QString::fromUtf8("Очистить журнал"), this);
+    auto *errorLog = new QAction(QString::fromUtf8("Журнал ошибок"), this);
     auto *settings = new QAction(QString::fromUtf8("Настройки"), this);
     serviceAction_ = new QAction(QString::fromUtf8("Установить службу"), this);
     auto *bar = addToolBar(QString::fromUtf8("Главная"));
@@ -525,6 +560,7 @@ void MainWindow::buildUi()
     bar->addAction(routingAction_);
     bar->addAction(serviceAction_);
     bar->addAction(clearLog);
+    bar->addAction(errorLog);
     bar->addAction(settings);
     auto *helpAction = new QAction(QString::fromUtf8("Справка"), this);
     bar->addAction(helpAction);
@@ -541,6 +577,9 @@ void MainWindow::buildUi()
     connect(serviceAction_, &QAction::triggered, this, &MainWindow::installService);
     connect(clearLog, &QAction::triggered, this, [this] {
         logView_->clear();
+    });
+    connect(errorLog, &QAction::triggered, this, [] {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(CrashLog::path()));
     });
     connect(settings, &QAction::triggered, this, [this] {
         AppConfig config = engine_.config();
@@ -854,7 +893,7 @@ void MainWindow::buildUi()
             return true;
         });
     });
-    connect(editRuleButton, &QPushButton::clicked, this, [=, customPos] {
+    connect(editRuleButton, &QPushButton::clicked, this, [=] {
         const int row = rulesView_->currentIndex().row();
         if (row < 0)
             return;
@@ -866,7 +905,7 @@ void MainWindow::buildUi()
         });
     });
     connect(rulesView_, &QTableView::doubleClicked, editRuleButton, &QPushButton::click);
-    connect(removeRule, &QPushButton::clicked, this, [=, customPos] {
+    connect(removeRule, &QPushButton::clicked, this, [=] {
         const int row = rulesView_->currentIndex().row();
         if (row < 0)
             return;
@@ -1017,6 +1056,8 @@ void MainWindow::refreshFlows()
     parts.append(engine_.config().routingEnabled ? QString::fromUtf8("маршрутизация включена")
                                                  : QString::fromUtf8("маршрутизация выключена"));
     parts.append(engine_.delegated() ? QString::fromUtf8("служба") : QString::fromUtf8("без службы"));
+    if (serviceInstalled_ && !serviceRunning_)
+        parts.append(QString::fromUtf8("служба не работает, интернет закрыт"));
     if (engine_.config().routingEnabled) {
         parts.append(engine_.divertActive()
                          ? QString::fromUtf8("перехват TCP %1").arg(engine_.divertPort())
@@ -1024,6 +1065,20 @@ void MainWindow::refreshFlows()
     }
     parts.append(QString::fromUtf8("записей: %1").arg(active));
     status_->setText(parts.join(QStringLiteral("  |  ")));
+    const bool installed = proxyServiceInstalled();
+    const bool running = installed && proxyServiceRunning();
+    if (installed == serviceInstalled_ && running == serviceRunning_)
+        return;
+    serviceInstalled_ = installed;
+    serviceRunning_ = running;
+    updateTray();
+    if (installed && !running && !serviceAlertShown_ && tray_) {
+        serviceAlertShown_ = true;
+        tray_->showMessage(QStringLiteral("stopRKN"),
+                           QString::fromUtf8("Служба не работает. Выход в интернет закрыт."));
+    }
+    if (running)
+        serviceAlertShown_ = false;
 }
 
 void MainWindow::refreshProxies()
@@ -1089,7 +1144,7 @@ void MainWindow::syncService()
 
 void MainWindow::attachService()
 {
-    if (!hub_->waitForService(800)) {
+    if (!hub_->waitForService(800) && !(startProxyService(nullptr, 8000) && hub_->waitForService(800))) {
         serviceAction_->setText(QString::fromUtf8("Установить службу"));
         Logger::instance()->info(QString::fromUtf8(
             "Служба не запущена, перехват без прав администратора недоступен. Нажмите «Установить службу»."));
@@ -1166,12 +1221,16 @@ void MainWindow::registerHotkey()
 
 void MainWindow::updateTray()
 {
-    const bool on = engine_.config().routingEnabled && engine_.listening();
-    const QIcon icon = statusIcon(on);
+    const bool down = serviceInstalled_ && !serviceRunning_;
+    const bool on = !down && engine_.config().routingEnabled && engine_.listening();
+    const QIcon icon = down ? serviceDownIcon() : statusIcon(on);
     tray_->setIcon(icon);
     setWindowIcon(icon);
-    tray_->setToolTip(on ? QString::fromUtf8("stopRKN: маршрутизация включена")
-                         : QString::fromUtf8("stopRKN: маршрутизация выключена"));
+    if (down)
+        tray_->setToolTip(QString::fromUtf8("stopRKN: служба не работает, выход в интернет закрыт"));
+    else
+        tray_->setToolTip(on ? QString::fromUtf8("stopRKN: маршрутизация включена")
+                             : QString::fromUtf8("stopRKN: маршрутизация выключена"));
 }
 
 QIcon MainWindow::statusIcon(bool active) const
