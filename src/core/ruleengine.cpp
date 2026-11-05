@@ -132,7 +132,116 @@ Decision fromRule(const AppConfig &config, const Rule &rule)
     return decision;
 }
 
+const QLatin1String kWebRtcProcesses[] = {
+    QLatin1String("browser.exe"),
+    QLatin1String("brave.exe"),
+    QLatin1String("chrome.exe"),
+    QLatin1String("chromium.exe"),
+    QLatin1String("dragon.exe"),
+    QLatin1String("firefox.exe"),
+    QLatin1String("iron.exe"),
+    QLatin1String("librewolf.exe"),
+    QLatin1String("maxthon.exe"),
+    QLatin1String("msedge.exe"),
+    QLatin1String("msedgewebview2.exe"),
+    QLatin1String("opera.exe"),
+    QLatin1String("opera_gx.exe"),
+    QLatin1String("slimjet.exe"),
+    QLatin1String("vivaldi.exe"),
+    QLatin1String("waterfox.exe"),
+    QLatin1String("whale.exe"),
+    QLatin1String("yandex.exe"),
+};
+
+bool ruleMatchesProcess(const Rule &rule, const QString &process)
+{
+    Endpoint endpoint;
+    endpoint.process = process;
+    return processMatches(rule, endpoint);
+}
+
+bool ruleIsCatchAllProcess(const Rule &rule)
+{
+    return ruleMatchesProcess(rule, QStringLiteral("zzz-stoprkn-sentinel.exe"));
+}
+
+bool ruleCoversBrowsers(const Rule &rule)
+{
+    if (ruleIsCatchAllProcess(rule))
+        return true;
+    for (const QLatin1String &name : kWebRtcProcesses) {
+        if (ruleMatchesProcess(rule, QString::fromLatin1(name.data(), name.size())))
+            return true;
+    }
+    return false;
+}
+
 } // namespace
+
+bool isWebRtcProcess(const QString &process)
+{
+    const QString name = process.trimmed().toLower();
+    for (const QLatin1String &item : kWebRtcProcesses) {
+        if (name == item)
+            return true;
+    }
+    return false;
+}
+
+bool blockDirectUdp(const AppConfig &config, const QString &process)
+{
+    if (!config.blockWebrtc || !config.routingEnabled || process.trimmed().isEmpty())
+        return false;
+    bool explicitRule = false;
+    bool catchAll = false;
+    for (const Rule &rule : config.rules) {
+        if (!rule.enabled)
+            continue;
+        if (rule.action != RuleAction::Proxy && rule.action != RuleAction::Chain)
+            continue;
+        if (!ruleMatchesProcess(rule, process))
+            continue;
+        if (ruleIsCatchAllProcess(rule))
+            catchAll = true;
+        else
+            explicitRule = true;
+    }
+    if (explicitRule)
+        return true;
+    if (!isWebRtcProcess(process))
+        return false;
+    return config.systemProxy || catchAll;
+}
+
+QList<Proxy> timezoneExitHops(const AppConfig &config)
+{
+    if (!config.matchTimezone || !config.routingEnabled)
+        return {};
+    const Rule *best = nullptr;
+    int bestScore = 0;
+    for (const Rule &rule : config.rules) {
+        if (!rule.enabled)
+            continue;
+        if (rule.action != RuleAction::Proxy && rule.action != RuleAction::Chain)
+            continue;
+        const QString target = rule.target.trimmed();
+        if (!target.isEmpty() && target != QLatin1String("*"))
+            continue;
+        if (!ruleCoversBrowsers(rule))
+            continue;
+        const int score = ruleIsCatchAllProcess(rule) ? 2 : 1;
+        if (score <= bestScore)
+            continue;
+        bestScore = score;
+        best = &rule;
+    }
+    if (!best)
+        return {};
+    const Decision decision = fromRule(config, *best);
+    if (decision.hops.isEmpty())
+        return {};
+    return decision.hops;
+}
 
 bool wildMatch(const QString &pattern, const QString &text)
 {

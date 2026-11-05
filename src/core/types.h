@@ -54,6 +54,8 @@ struct AppConfig {
     bool socksEnabled = true;
     bool autostart = false;
     bool systemProxy = false;
+    bool blockWebrtc = true;
+    bool matchTimezone = true;
     int logLimit = 5000;
     bool remoteDns = true;
     bool routingEnabled = false;

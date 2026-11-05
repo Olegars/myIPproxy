@@ -185,6 +185,8 @@ AppConfig ConfigStore::load(const QString &path, QString *error)
     config.socksEnabled = root.value(QStringLiteral("socksEnabled")).toBool(config.socksEnabled);
     config.autostart = root.value(QStringLiteral("autostart")).toBool();
     config.systemProxy = root.value(QStringLiteral("systemProxy")).toBool();
+    config.blockWebrtc = root.value(QStringLiteral("blockWebrtc")).toBool(true);
+    config.matchTimezone = root.value(QStringLiteral("matchTimezone")).toBool(true);
     config.logLimit = root.value(QStringLiteral("logLimit")).toInt(config.logLimit);
     config.remoteDns = root.value(QStringLiteral("remoteDns")).toBool(true);
     config.routingEnabled = root.value(QStringLiteral("routingEnabled")).toBool();
@@ -222,6 +224,8 @@ bool ConfigStore::save(const QString &path, const AppConfig &config, QString *er
     root.insert(QStringLiteral("socksEnabled"), config.socksEnabled);
     root.insert(QStringLiteral("autostart"), config.autostart);
     root.insert(QStringLiteral("systemProxy"), config.systemProxy);
+    root.insert(QStringLiteral("blockWebrtc"), config.blockWebrtc);
+    root.insert(QStringLiteral("matchTimezone"), config.matchTimezone);
     root.insert(QStringLiteral("logLimit"), config.logLimit);
     root.insert(QStringLiteral("remoteDns"), config.remoteDns);
     root.insert(QStringLiteral("routingEnabled"), config.routingEnabled);

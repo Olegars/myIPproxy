@@ -321,7 +321,7 @@ bool editSettings(QWidget *parent, AppConfig &config)
 {
     QDialog dialog(parent);
     dialog.setWindowTitle(QString::fromUtf8("Настройки"));
-    dialog.resize(480, 460);
+    dialog.resize(520, 620);
     auto *host = new QLineEdit(config.listenHost);
     auto *socksPort = new QSpinBox;
     socksPort->setRange(1, 65535);
@@ -337,6 +337,16 @@ bool editSettings(QWidget *parent, AppConfig &config)
     remote->setChecked(config.remoteDns);
     auto *system = new QCheckBox(QString::fromUtf8("Ставить системный прокси Windows, пока маршрутизация включена"));
     system->setChecked(config.systemProxy);
+    auto *webrtc = new QCheckBox(QString::fromUtf8("Не пускать WebRTC мимо прокси"));
+    webrtc->setChecked(config.blockWebrtc);
+    auto *timezone = new QCheckBox(QString::fromUtf8("Часовой пояс Windows по IP выхода прокси"));
+    timezone->setChecked(config.matchTimezone);
+    auto *privacyHint = new QLabel(QString::fromUtf8(
+        "WebRTC: у Chrome, Edge, Яндекса, Opera, Brave и Firefox включается политика «только через прокси», "
+        "а их UDP, кроме DNS, отбрасывается. Часы Windows переводятся на текущее время пояса, где находится IP выхода. "
+        "Для этого нужно правило без списка адресов: весь трафик браузера или всех программ в один прокси. "
+        "После включения закройте браузер и откройте снова. Выключение маршрутизации возвращает прежний пояс."));
+    privacyHint->setWordWrap(true);
     auto *autostart = new QCheckBox(QString::fromUtf8("Автозапуск с Windows"));
     autostart->setChecked(config.autostart);
     auto *limit = new QSpinBox;
@@ -365,6 +375,8 @@ bool editSettings(QWidget *parent, AppConfig &config)
     form->addRow(QString(), httpOn);
     form->addRow(QString(), remote);
     form->addRow(QString(), system);
+    form->addRow(QString(), webrtc);
+    form->addRow(QString(), timezone);
     form->addRow(QString(), autostart);
     form->addRow(QString::fromUtf8("Лимит строк журнала"), limit);
     form->addRow(QString::fromUtf8("Горячая клавиша"), hotkey);
@@ -374,6 +386,7 @@ bool editSettings(QWidget *parent, AppConfig &config)
     form->addRow(QString::fromUtf8("Ключ щита"), shieldPsk);
     auto *layout = new QVBoxLayout(&dialog);
     layout->addLayout(form);
+    layout->addWidget(privacyHint);
     layout->addWidget(hint);
     layout->addWidget(buttons(&dialog));
     if (dialog.exec() != QDialog::Accepted)
@@ -394,6 +407,8 @@ bool editSettings(QWidget *parent, AppConfig &config)
     config.httpEnabled = httpOn->isChecked();
     config.remoteDns = remote->isChecked();
     config.systemProxy = system->isChecked();
+    config.blockWebrtc = webrtc->isChecked();
+    config.matchTimezone = timezone->isChecked();
     config.autostart = autostart->isChecked();
     config.logLimit = limit->value();
     config.hotkey = hotkey->keySequence().toString(QKeySequence::PortableText);

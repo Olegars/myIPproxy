@@ -4,6 +4,7 @@
 #include "flow.h"
 #include "inbound.h"
 #include "presets.h"
+#include "privacy.h"
 #include "ruleengine.h"
 #include "shieldcodec.h"
 #include "shieldserver.h"
@@ -372,6 +373,97 @@ int testLiveTunnel()
     return g_failed - before;
 }
 
+int testPrivacy()
+{
+    const int before = g_failed;
+    check(qpr::windowsZoneForIana("Europe/Moscow") == QStringLiteral("Russian Standard Time"), "moscow zone");
+    check(qpr::windowsZoneForIana("Europe/Paris") == QStringLiteral("Romance Standard Time"), "paris zone");
+    check(qpr::windowsZoneForIana("America/New_York") == QStringLiteral("Eastern Standard Time"), "ny zone");
+    check(qpr::windowsZoneForIana("Asia/Dubai") == QStringLiteral("Arabian Standard Time"), "dubai zone");
+    check(qpr::windowsZoneForIana("Not/Azone").isEmpty(), "unknown zone");
+    check(qpr::isWebRtcProcess(QStringLiteral("Chrome.EXE")), "chrome is webrtc");
+    check(!qpr::isWebRtcProcess(QStringLiteral("steam.exe")), "steam is not webrtc");
+
+    qpr::AppConfig config;
+    config.routingEnabled = true;
+    qpr::Proxy proxy;
+    proxy.id = QStringLiteral("p");
+    proxy.host = QStringLiteral("203.0.113.5");
+    proxy.port = 443;
+    config.proxies = {proxy};
+
+    qpr::Rule social;
+    social.enabled = true;
+    social.action = qpr::RuleAction::Proxy;
+    social.proxyId = proxy.id;
+    social.process = QStringLiteral("*");
+    social.target = QStringLiteral("youtube.com");
+    config.rules = {social};
+    check(qpr::timezoneExitHops(config).isEmpty(), "domain rule does not move the clock");
+    check(qpr::blockDirectUdp(config, QStringLiteral("chrome.exe")), "browser udp blocked");
+    check(!qpr::blockDirectUdp(config, QStringLiteral("cs2.exe")), "game udp stays");
+
+    qpr::Rule browser;
+    browser.enabled = true;
+    browser.action = qpr::RuleAction::Proxy;
+    browser.proxyId = proxy.id;
+    browser.process = QStringLiteral("chrome.exe");
+    config.rules = {browser};
+    const QList<qpr::Proxy> hops = qpr::timezoneExitHops(config);
+    check(hops.size() == 1 && hops.first().host == QStringLiteral("203.0.113.5"), "browser-wide exit");
+    check(qpr::blockDirectUdp(config, QStringLiteral("chrome.exe")), "explicit browser");
+    check(!qpr::blockDirectUdp(config, QStringLiteral("firefox.exe")), "other browser direct");
+
+    qpr::Rule discord;
+    discord.enabled = true;
+    discord.action = qpr::RuleAction::Proxy;
+    discord.proxyId = proxy.id;
+    discord.process = QStringLiteral("discord.exe");
+    config.rules = {discord};
+    check(qpr::timezoneExitHops(config).isEmpty(), "discord does not move the clock");
+    check(qpr::blockDirectUdp(config, QStringLiteral("discord.exe")), "explicit app udp blocked");
+
+    config.rules.clear();
+    config.systemProxy = true;
+    check(qpr::blockDirectUdp(config, QStringLiteral("msedge.exe")), "system proxy blocks browser udp");
+    check(!qpr::blockDirectUdp(config, QStringLiteral("discord.exe")), "system proxy leaves other udp");
+    config.blockWebrtc = false;
+    check(!qpr::blockDirectUdp(config, QStringLiteral("msedge.exe")), "webrtc option off");
+    config.blockWebrtc = true;
+    config.routingEnabled = false;
+    check(!qpr::blockDirectUdp(config, QStringLiteral("msedge.exe")), "routing off");
+
+    config.routingEnabled = true;
+    qpr::Chain chain;
+    chain.id = QStringLiteral("c");
+    chain.proxyIds = {proxy.id};
+    config.chains = {chain};
+    qpr::Rule all;
+    all.enabled = true;
+    all.action = qpr::RuleAction::Chain;
+    all.chainId = chain.id;
+    all.process = QStringLiteral("*");
+    config.rules = {all};
+    check(qpr::timezoneExitHops(config).size() == 1, "catch-all chain");
+    config.matchTimezone = false;
+    check(qpr::timezoneExitHops(config).isEmpty(), "timezone option off");
+
+    const QString path = QDir::temp().filePath(QStringLiteral("myipproxy-privacy-config.json"));
+    QString error;
+    config.blockWebrtc = false;
+    check(qpr::ConfigStore::save(path, config, &error), "save privacy flags");
+    const qpr::AppConfig loaded = qpr::ConfigStore::load(path, &error);
+    check(!loaded.blockWebrtc && !loaded.matchTimezone, "privacy flags roundtrip");
+    QFile file(path);
+    check(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "rewrite legacy config");
+    file.write(QByteArrayLiteral("{ \"listenHost\": \"127.0.0.1\" }"));
+    file.close();
+    const qpr::AppConfig legacy = qpr::ConfigStore::load(path, &error);
+    check(legacy.blockWebrtc && legacy.matchTimezone, "privacy defaults on");
+    QFile::remove(path);
+    return g_failed - before;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -384,6 +476,7 @@ int main(int argc, char **argv)
     testRules();
     testShieldCodec();
     testConfig();
+    testPrivacy();
     testLiveTunnel();
     if (g_failed == 0) {
         std::printf("ok\n");

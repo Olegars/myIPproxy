@@ -15,6 +15,7 @@ namespace qpr {
 
 class InboundServer;
 class PacketDivert;
+class PrivacyGuard;
 class ShieldServer;
 
 class Engine : public QObject {
@@ -80,6 +81,7 @@ private:
     QTimer *trimTimer_ = nullptr;
     InboundServer *inbound_ = nullptr;
     PacketDivert *divertor_ = nullptr;
+    PrivacyGuard *privacy_ = nullptr;
     ShieldServer *shield_ = nullptr;
     QHash<QString, Flow *> flows_;
     SystemProxy systemProxy_;

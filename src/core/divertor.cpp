@@ -198,7 +198,7 @@ bool PacketDivert::start()
                                      .arg(divertFailure(error)));
     const QByteArray networkFilter = QStringLiteral(
                                          "(tcp and not impostor and ((outbound and !loopback) or (loopback and tcp.SrcPort == %1)))"
-                                         " or (udp and not impostor and outbound and !loopback and udp.DstPort == 443)")
+                                         " or (udp and not impostor and outbound and !loopback)")
                                          .arg(port_)
                                          .toLatin1();
     handle_ = divert_open(library_, networkFilter.constData(), DIVERT_LAYER_NETWORK, 0, &error);
@@ -228,7 +228,7 @@ bool PacketDivert::start()
     d_->thread = std::thread([this] { loop(); });
     active_ = true;
     Logger::instance()->info(QString::fromUtf8(
-        "Перехват TCP через WinDivert, порт %1. Через прокси идут только программы из правил, остальной TCP не трогается.")
+        "Перехват TCP через WinDivert, порт %1. Через прокси идут только программы из правил, остальной TCP не трогается. UDP браузеров в прокси режется, кроме DNS.")
                                  .arg(port_));
     return true;
 }
@@ -359,22 +359,48 @@ bool PacketDivert::onPacket(unsigned char *buffer, unsigned length, void *metaPt
             return false;
         const quint16 udpSrc = readPort(udp, 0);
         const quint16 udpDst = readPort(udp, 2);
-        if (udpDst != 443)
+        if (udpDst == 53)
             return false;
-        ProcInfo proc = socketProc(17, udpSrc, udpDst);
-        if (proc.pid == 0)
-            proc = processForUdp(udpSrc, family == 6, true);
-        if (proc.pid == 0 || proc.pid == d_->self)
-            return false;
-        Endpoint endpoint;
-        endpoint.process = proc.name;
-        endpoint.pid = proc.pid;
-        endpoint.port = udpDst;
         AppConfig config;
         {
             QMutexLocker lock(&d_->mutex);
             config = d_->config;
         }
+        if (config.blockWebrtc && config.routingEnabled
+            && (udpDst == 3478 || udpDst == 19302 || udpDst == 5349)) {
+            static qint64 lastStun = 0;
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (now - lastStun > 5000) {
+                lastStun = now;
+                Logger::instance()->warn(QString::fromUtf8(
+                    "UDP %1 отброшен: это порт STUN, через него WebRTC показывает настоящий адрес.")
+                                             .arg(udpDst));
+            }
+            return true;
+        }
+        ProcInfo proc = socketProc(17, udpSrc, udpDst);
+        if (proc.pid == 0)
+            proc = processForUdp(udpSrc, family == 6, true);
+        if (proc.pid == 0 || proc.pid == d_->self)
+            return false;
+        if (udpDst != 443) {
+            if (!blockDirectUdp(config, proc.name))
+                return false;
+            static qint64 lastUdp = 0;
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (now - lastUdp > 5000) {
+                lastUdp = now;
+                Logger::instance()->warn(QString::fromUtf8(
+                    "UDP %1 у %2 отброшен: WebRTC не уйдёт мимо прокси.")
+                                             .arg(udpDst)
+                                             .arg(proc.name));
+            }
+            return true;
+        }
+        Endpoint endpoint;
+        endpoint.process = proc.name;
+        endpoint.pid = proc.pid;
+        endpoint.port = udpDst;
         const Decision decision = matchRules(config, endpoint);
         if (decision.action != RuleAction::Proxy && decision.action != RuleAction::Chain
             && decision.action != RuleAction::Block && !browserNeedsSiteName(proc.name, udpDst))

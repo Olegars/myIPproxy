@@ -16,8 +16,8 @@ if(MSVC)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
-if(MINGW AND NOT OPENSSL_ROOT_DIR AND EXISTS "C:/msys64/mingw64/include/openssl/ssl.h")
-    set(OPENSSL_ROOT_DIR "C:/msys64/mingw64" CACHE PATH "OpenSSL из MSYS2: в комплекте Qt его нет")
+if(NOT OPENSSL_ROOT_DIR AND EXISTS "C:/Qt/openssl/include/openssl/ssl.h")
+    set(OPENSSL_ROOT_DIR "C:/Qt/openssl" CACHE PATH "OpenSSL для сборки MSVC")
 endif()
 find_package(OpenSSL REQUIRED)
 
@@ -71,6 +71,8 @@ set(CORE_SOURCES
     src/core/killswitch.cpp
     src/core/proxytest.h
     src/core/proxytest.cpp
+    src/core/privacy.h
+    src/core/privacy.cpp
 )
 
 add_library(myipproxy_core STATIC ${CORE_SOURCES})
@@ -80,7 +82,7 @@ if(MINGW)
 endif()
 target_link_libraries(myipproxy_core PUBLIC Qt6::Core Qt6::Network OpenSSL::Crypto)
 if(WIN32)
-    target_link_libraries(myipproxy_core PUBLIC ws2_32 iphlpapi crypt32 wininet advapi32 fwpuclnt)
+    target_link_libraries(myipproxy_core PUBLIC ws2_32 iphlpapi crypt32 wininet advapi32 user32 fwpuclnt)
 endif()
 target_compile_definitions(myipproxy_core PRIVATE
     QT_NO_CAST_FROM_ASCII

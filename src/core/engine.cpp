@@ -6,6 +6,7 @@
 #include "inbound.h"
 #include "logger.h"
 #include "presets.h"
+#include "privacy.h"
 #include "proxytest.h"
 #include "ruleengine.h"
 #include "shieldserver.h"
@@ -21,6 +22,7 @@ Engine::Engine(QObject *parent)
     : QObject(parent)
     , inbound_(new InboundServer(this))
     , divertor_(new PacketDivert(inbound_, this))
+    , privacy_(new PrivacyGuard(this))
     , shield_(new ShieldServer(this))
     , configPath_(ConfigStore::defaultPath())
 {
@@ -44,6 +46,7 @@ void Engine::load()
         Logger::instance()->warn(QString::fromUtf8("Настройки: %1").arg(error));
     else
         Logger::instance()->info(QString::fromUtf8("Настройки: %1").arg(configPath_));
+    privacy_->recoverIfIdle(!config_.routingEnabled);
 }
 
 void Engine::setConfig(AppConfig config)
@@ -113,6 +116,7 @@ void Engine::stop()
         trimTimer_->stop();
         return;
     }
+    privacy_->sync(config_, false);
     divertor_->stop();
     inbound_->closeListeners();
     shield_->closeListener();
@@ -326,12 +330,14 @@ void Engine::applyDivert()
     if (delegated_)
         return;
     divertor_->setConfig(config_);
-    if (listening_ && config_.routingEnabled) {
+    const bool active = listening_ && config_.routingEnabled;
+    if (active) {
         if (!divertor_->active())
             divertor_->start();
     } else {
         divertor_->stop();
     }
+    privacy_->sync(config_, active);
 }
 
 bool Engine::endpointsDiffer(const AppConfig &other) const
