@@ -381,6 +381,9 @@ int testPrivacy()
     check(qpr::windowsZoneForIana("America/New_York") == QStringLiteral("Eastern Standard Time"), "ny zone");
     check(qpr::windowsZoneForIana("Asia/Dubai") == QStringLiteral("Arabian Standard Time"), "dubai zone");
     check(qpr::windowsZoneForIana("Not/Azone").isEmpty(), "unknown zone");
+    check(qpr::acceptLanguagesForCountry(QStringLiteral("us")) == QStringLiteral("en-US, en"), "us language");
+    check(qpr::acceptLanguagesForCountry(QStringLiteral("DE")) == QStringLiteral("de-DE, de, en-US, en"), "de language");
+    check(qpr::acceptLanguagesForCountry(QString()).isEmpty(), "empty language");
     check(qpr::isWebRtcProcess(QStringLiteral("Chrome.EXE")), "chrome is webrtc");
     check(!qpr::isWebRtcProcess(QStringLiteral("steam.exe")), "steam is not webrtc");
 

@@ -9,6 +9,7 @@ namespace qpr {
 struct AppConfig;
 
 QString windowsZoneForIana(const QByteArray &iana);
+QString acceptLanguagesForCountry(const QString &country);
 
 class PrivacyGuard : public QObject {
 public:
@@ -19,7 +20,8 @@ public:
     void sync(const AppConfig &config, bool active);
 
 private:
-    void onExit(int generation, const QString &iana, const QString &ip, const QString &error);
+    void onExit(int generation, const QString &iana, const QString &ip, const QString &country, const QString &error);
+    void applyExitLanguage(const QString &country);
     void applyWebrtc();
     void restoreWebrtc();
     void restoreTimezone();

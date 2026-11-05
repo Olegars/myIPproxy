@@ -342,10 +342,9 @@ bool editSettings(QWidget *parent, AppConfig &config)
     auto *timezone = new QCheckBox(QString::fromUtf8("Часовой пояс Windows по IP выхода прокси"));
     timezone->setChecked(config.matchTimezone);
     auto *privacyHint = new QLabel(QString::fromUtf8(
-        "WebRTC: у Chrome, Edge, Яндекса, Opera, Brave и Firefox включается политика «только через прокси», "
-        "а их UDP, кроме DNS, отбрасывается. Часы Windows переводятся на текущее время пояса, где находится IP выхода. "
-        "Для этого нужно правило без списка адресов: весь трафик браузера или всех программ в один прокси. "
-        "После включения закройте браузер и откройте снова. Выключение маршрутизации возвращает прежний пояс."));
+        "WebRTC и прямой DNS браузера отбрасываются. DNS идёт через Cloudflare уже с IP выхода, "
+        "язык сайтов подстраивается под страну этого IP, часы Windows — под его пояс. "
+        "Нужно правило без списка адресов на весь трафик браузера. После включения закройте браузер и откройте снова."));
     privacyHint->setWordWrap(true);
     auto *autostart = new QCheckBox(QString::fromUtf8("Автозапуск с Windows"));
     autostart->setChecked(config.autostart);

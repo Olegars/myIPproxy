@@ -359,8 +359,6 @@ bool PacketDivert::onPacket(unsigned char *buffer, unsigned length, void *metaPt
             return false;
         const quint16 udpSrc = readPort(udp, 0);
         const quint16 udpDst = readPort(udp, 2);
-        if (udpDst == 53)
-            return false;
         AppConfig config;
         {
             QMutexLocker lock(&d_->mutex);
@@ -383,6 +381,19 @@ bool PacketDivert::onPacket(unsigned char *buffer, unsigned length, void *metaPt
             proc = processForUdp(udpSrc, family == 6, true);
         if (proc.pid == 0 || proc.pid == d_->self)
             return false;
+        if (udpDst == 53) {
+            if (!blockDirectUdp(config, proc.name))
+                return false;
+            static qint64 lastDns = 0;
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (now - lastDns > 5000) {
+                lastDns = now;
+                Logger::instance()->warn(QString::fromUtf8(
+                    "DNS у %1 отброшен: иначе запрос уйдёт в местный сервер и выдаст страну.")
+                                             .arg(proc.name));
+            }
+            return true;
+        }
         if (udpDst != 443) {
             if (!blockDirectUdp(config, proc.name))
                 return false;
@@ -551,6 +562,8 @@ bool PacketDivert::onPacket(unsigned char *buffer, unsigned length, void *metaPt
                 fresh.action = decision.hops.isEmpty() ? RuleAction::Block : RuleAction::Proxy;
             else
                 fresh.action = decision.action;
+            if (dstPort == 53 && blockDirectUdp(config, fresh.process))
+                fresh.action = RuleAction::Block;
             const bool peekName = fresh.action == RuleAction::Direct
                 && browserNeedsSiteName(fresh.process, dstPort);
             if (peekName)

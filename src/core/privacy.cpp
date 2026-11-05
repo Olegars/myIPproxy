@@ -257,13 +257,13 @@ public:
     void start()
     {
         auto *dialer = new Dialer(hops_, QStringLiteral("ip-api.com"), 80, true, this);
-        connect(dialer, &Dialer::failed, this, [this](const QString &error) { finish({}, {}, error); });
+        connect(dialer, &Dialer::failed, this, [this](const QString &error) { finish({}, {}, {}, error); });
         connect(dialer, &Dialer::established, this, [this](Pipe *pipe) {
             pipe->setParent(this);
             connect(pipe, &Pipe::bytes, this, [this](const QByteArray &chunk) { buffer_.append(chunk); });
             connect(pipe, &Pipe::finished, this, [this](const QString &) { parse(buffer_); });
             pipe->write(QByteArrayLiteral(
-                "GET /json/?fields=status,query,timezone HTTP/1.1\r\n"
+                "GET /json/?fields=status,query,timezone,countryCode HTTP/1.1\r\n"
                 "Host: ip-api.com\r\n"
                 "Connection: close\r\n"
                 "Accept: application/json\r\n"
@@ -271,7 +271,7 @@ public:
                 "\r\n"));
             pipe->goLive();
             QTimer::singleShot(12000, this, [this] {
-                finish({}, {}, QString::fromUtf8("таймаут ответа о часовом поясе"));
+                finish({}, {}, {}, QString::fromUtf8("таймаут ответа о часовом поясе"));
             });
         });
         dialer->start();
@@ -279,25 +279,26 @@ public:
 
     QList<Proxy> hops_;
     QByteArray buffer_;
-    std::function<void(const QString &, const QString &, const QString &)> done;
+    std::function<void(const QString &, const QString &, const QString &, const QString &)> done;
 
     void parse(const QByteArray &raw)
     {
         const int begin = raw.indexOf('{');
         const int end = raw.lastIndexOf('}');
         if (begin < 0 || end < begin) {
-            finish({}, {}, QString::fromUtf8("ответ о часовом поясе без JSON"));
+            finish({}, {}, {}, QString::fromUtf8("ответ о часовом поясе без JSON"));
             return;
         }
         const QJsonObject obj = QJsonDocument::fromJson(raw.mid(begin, end - begin + 1)).object();
         if (obj.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
-            finish({}, {}, QString::fromUtf8("сервис часового пояса отказал"));
+            finish({}, {}, {}, QString::fromUtf8("сервис часового пояса отказал"));
             return;
         }
-        finish(obj.value(QStringLiteral("timezone")).toString(), obj.value(QStringLiteral("query")).toString(), {});
+        finish(obj.value(QStringLiteral("timezone")).toString(), obj.value(QStringLiteral("query")).toString(),
+               obj.value(QStringLiteral("countryCode")).toString(), {});
     }
 
-    void finish(const QString &iana, const QString &ip, const QString &error)
+    void finish(const QString &iana, const QString &ip, const QString &country, const QString &error)
     {
         if (finished_)
             return;
@@ -305,7 +306,7 @@ public:
         const auto cb = done;
         deleteLater();
         if (cb)
-            cb(iana, ip, error);
+            cb(iana, ip, country, error);
     }
 
     bool finished_ = false;
@@ -411,7 +412,8 @@ REGSAM viewFromInt(int view)
     return view == 32 ? KEY_WOW64_32KEY : KEY_WOW64_64KEY;
 }
 
-bool writePolicyValue(HKEY hive, REGSAM view, const QString &subkey, bool *had, QString *previous)
+bool writePolicyValue(HKEY hive, REGSAM view, const QString &subkey, const wchar_t *valueName, const wchar_t *text,
+                      bool *had, QString *previous)
 {
     HKEY key = nullptr;
     const std::wstring path = subkey.toStdWString();
@@ -421,18 +423,16 @@ bool writePolicyValue(HKEY hive, REGSAM view, const QString &subkey, bool *had, 
     *had = false;
     previous->clear();
     DWORD size = 0;
-    if (RegGetValueW(key, nullptr, L"WebRtcIPHandling", RRF_RT_REG_SZ, nullptr, nullptr, &size) == ERROR_SUCCESS
+    if (RegGetValueW(key, nullptr, valueName, RRF_RT_REG_SZ, nullptr, nullptr, &size) == ERROR_SUCCESS
         && size >= sizeof(wchar_t)) {
         QByteArray buf(int(size), 0);
-        if (RegGetValueW(key, nullptr, L"WebRtcIPHandling", RRF_RT_REG_SZ, nullptr, buf.data(), &size) == ERROR_SUCCESS) {
+        if (RegGetValueW(key, nullptr, valueName, RRF_RT_REG_SZ, nullptr, buf.data(), &size) == ERROR_SUCCESS) {
             *had = true;
             *previous = QString::fromWCharArray(reinterpret_cast<const wchar_t *>(buf.constData()));
         }
     }
-    const wchar_t *text = L"disable_non_proxied_udp";
     const DWORD bytes = DWORD((wcslen(text) + 1) * sizeof(wchar_t));
-    const bool ok = RegSetValueExW(key, L"WebRtcIPHandling", 0, REG_SZ, reinterpret_cast<const BYTE *>(text), bytes)
-        == ERROR_SUCCESS;
+    const bool ok = RegSetValueExW(key, valueName, 0, REG_SZ, reinterpret_cast<const BYTE *>(text), bytes) == ERROR_SUCCESS;
     RegCloseKey(key);
     return ok;
 }
@@ -446,14 +446,16 @@ bool restorePolicyValue(const QJsonObject &entry)
                       KEY_SET_VALUE | view, &key)
         != ERROR_SUCCESS)
         return false;
+    const QString valueName = entry.value(QStringLiteral("name")).toString(QStringLiteral("WebRtcIPHandling"));
+    const std::wstring name = valueName.toStdWString();
     bool ok = true;
     if (entry.value(QStringLiteral("had")).toBool()) {
         const std::wstring previous = entry.value(QStringLiteral("previous")).toString().toStdWString();
         const DWORD bytes = DWORD((previous.size() + 1) * sizeof(wchar_t));
-        ok = RegSetValueExW(key, L"WebRtcIPHandling", 0, REG_SZ, reinterpret_cast<const BYTE *>(previous.c_str()), bytes)
+        ok = RegSetValueExW(key, name.c_str(), 0, REG_SZ, reinterpret_cast<const BYTE *>(previous.c_str()), bytes)
             == ERROR_SUCCESS;
     } else {
-        const LONG err = RegDeleteValueW(key, L"WebRtcIPHandling");
+        const LONG err = RegDeleteValueW(key, name.c_str());
         ok = err == ERROR_SUCCESS || err == ERROR_FILE_NOT_FOUND;
     }
     RegCloseKey(key);
@@ -470,7 +472,7 @@ const wchar_t *kPolicyKeys[] = {
     L"Software\\Policies\\Chromium",
 };
 
-QJsonObject preferenceLock(bool value)
+QJsonObject preferenceLock(const QJsonValue &value)
 {
     QJsonObject obj;
     obj.insert(QStringLiteral("Value"), value);
@@ -508,7 +510,7 @@ QStringList firefoxDirectories()
     return dirs;
 }
 
-bool writeFirefoxPolicy(const QString &dir, QJsonObject *record, QString *error)
+bool writeFirefoxPolicy(const QString &dir, const QString &languages, QJsonObject *record, QString *error)
 {
     const QString folder = dir + QStringLiteral("/distribution");
     if (!QDir().mkpath(folder)) {
@@ -545,6 +547,11 @@ bool writeFirefoxPolicy(const QString &dir, QJsonObject *record, QString *error)
     QJsonObject prefs = policies.value(QStringLiteral("Preferences")).toObject();
     prefs.insert(QStringLiteral("media.peerconnection.ice.proxy_only"), preferenceLock(true));
     prefs.insert(QStringLiteral("media.peerconnection.ice.no_host"), preferenceLock(true));
+    prefs.insert(QStringLiteral("network.trr.mode"), preferenceLock(3));
+    prefs.insert(QStringLiteral("network.trr.uri"), preferenceLock(QStringLiteral("https://cloudflare-dns.com/dns-query")));
+    prefs.insert(QStringLiteral("network.trr.bootstrapAddress"), preferenceLock(QStringLiteral("1.1.1.1")));
+    if (!languages.isEmpty())
+        prefs.insert(QStringLiteral("intl.accept_languages"), preferenceLock(languages));
     policies.insert(QStringLiteral("Preferences"), prefs);
     root.insert(QStringLiteral("policies"), policies);
     QSaveFile out(path);
@@ -579,6 +586,36 @@ bool restoreFirefoxPolicy(const QJsonObject &entry)
 #endif
 
 } // namespace
+
+QString acceptLanguagesForCountry(const QString &country)
+{
+    const QString code = country.trimmed().toUpper();
+    if (code == QLatin1String("GB") || code == QLatin1String("IE"))
+        return QStringLiteral("en-GB, en");
+    if (code == QLatin1String("US") || code == QLatin1String("AU") || code == QLatin1String("NZ"))
+        return QStringLiteral("en-US, en");
+    if (code == QLatin1String("CA"))
+        return QStringLiteral("en-CA, en");
+    if (code == QLatin1String("DE") || code == QLatin1String("AT"))
+        return QStringLiteral("de-DE, de, en-US, en");
+    if (code == QLatin1String("FR"))
+        return QStringLiteral("fr-FR, fr, en-US, en");
+    if (code == QLatin1String("NL"))
+        return QStringLiteral("nl-NL, nl, en-US, en");
+    if (code == QLatin1String("ES"))
+        return QStringLiteral("es-ES, es, en-US, en");
+    if (code == QLatin1String("IT"))
+        return QStringLiteral("it-IT, it, en-US, en");
+    if (code == QLatin1String("BR"))
+        return QStringLiteral("pt-BR, pt, en-US, en");
+    if (code == QLatin1String("JP"))
+        return QStringLiteral("ja-JP, ja, en-US, en");
+    if (code == QLatin1String("RU") || code == QLatin1String("BY") || code == QLatin1String("KZ"))
+        return QStringLiteral("ru-RU, ru, en-US, en");
+    if (code.isEmpty())
+        return {};
+    return QStringLiteral("en-US, en");
+}
 
 QString windowsZoneForIana(const QByteArray &iana)
 {
@@ -749,26 +786,38 @@ void PrivacyGuard::applyWebrtc()
     for (int hive = 0; hive < 2; ++hive) {
         for (int view : views) {
             for (const wchar_t *subkey : kPolicyKeys) {
-                bool had = false;
-                QString previous;
-                if (!writePolicyValue(hives[hive], viewFromInt(view), QString::fromWCharArray(subkey), &had, &previous))
-                    continue;
-                if (had && previous == QLatin1String("disable_non_proxied_udp"))
-                    continue;
-                QJsonObject entry;
-                entry.insert(QStringLiteral("root"), QString::fromLatin1(hiveNames[hive]));
-                entry.insert(QStringLiteral("view"), view);
-                entry.insert(QStringLiteral("key"), QString::fromWCharArray(subkey));
-                entry.insert(QStringLiteral("had"), had);
-                entry.insert(QStringLiteral("previous"), previous);
-                d_->chromium.append(entry);
+                const struct {
+                    const wchar_t *name;
+                    const wchar_t *text;
+                } values[] = {
+                    {L"WebRtcIPHandling", L"disable_non_proxied_udp"},
+                    {L"DnsOverHttpsMode", L"secure"},
+                    {L"DnsOverHttpsTemplates", L"https://cloudflare-dns.com/dns-query"},
+                };
+                for (const auto &value : values) {
+                    bool had = false;
+                    QString previous;
+                    if (!writePolicyValue(hives[hive], viewFromInt(view), QString::fromWCharArray(subkey), value.name,
+                                          value.text, &had, &previous))
+                        continue;
+                    if (had && previous == QString::fromWCharArray(value.text))
+                        continue;
+                    QJsonObject entry;
+                    entry.insert(QStringLiteral("root"), QString::fromLatin1(hiveNames[hive]));
+                    entry.insert(QStringLiteral("view"), view);
+                    entry.insert(QStringLiteral("key"), QString::fromWCharArray(subkey));
+                    entry.insert(QStringLiteral("name"), QString::fromWCharArray(value.name));
+                    entry.insert(QStringLiteral("had"), had);
+                    entry.insert(QStringLiteral("previous"), previous);
+                    d_->chromium.append(entry);
+                }
             }
         }
     }
     QString firefoxError;
     for (const QString &dir : firefoxDirectories()) {
         QJsonObject record;
-        if (writeFirefoxPolicy(dir, &record, &firefoxError))
+        if (writeFirefoxPolicy(dir, QString(), &record, &firefoxError))
             d_->firefox.append(record);
     }
     d_->webrtcReady = true;
@@ -778,7 +827,7 @@ void PrivacyGuard::applyWebrtc()
             "Политики браузеров не записались. UDP WebRTC всё равно отбрасывается, локальный адрес в обход политики может остаться."));
     else
         Logger::instance()->info(QString::fromUtf8(
-            "WebRTC мимо прокси закрыт. Закройте браузер и откройте снова, иначе он ещё держит старые настройки."));
+            "WebRTC закрыт, DNS браузера идёт через Cloudflare по прокси. Закройте браузер и откройте снова."));
     if (!firefoxError.isEmpty())
         Logger::instance()->warn(QString::fromUtf8("Политику Firefox не записал: %1").arg(firefoxError));
 #else
@@ -832,16 +881,61 @@ void PrivacyGuard::sync(const AppConfig &config, bool active)
     const int gen = ++d_->probeGen;
     auto *probe = new ExitProbe(hops, this);
     QPointer<PrivacyGuard> self(this);
-    probe->done = [self, gen](const QString &iana, const QString &ip, const QString &error) {
+    probe->done = [self, gen](const QString &iana, const QString &ip, const QString &country, const QString &error) {
         if (!self || gen != self->d_->probeGen)
             return;
         self->d_->probeBusy = false;
-        self->onExit(gen, iana, ip, error);
+        self->onExit(gen, iana, ip, country, error);
     };
     probe->start();
 }
 
-void PrivacyGuard::onExit(int generation, const QString &iana, const QString &ip, const QString &error)
+void PrivacyGuard::applyExitLanguage(const QString &country)
+{
+    const QString languages = acceptLanguagesForCountry(country);
+    if (languages.isEmpty())
+        return;
+#ifdef _WIN32
+    QStringList dirs;
+    for (const QJsonValue &value : d_->firefox) {
+        const QString path = value.toObject().value(QStringLiteral("path")).toString();
+        QDir dir = QFileInfo(path).dir();
+        if (dir.dirName().compare(QLatin1String("distribution"), Qt::CaseInsensitive) != 0 || !dir.cdUp())
+            continue;
+        const QString installDir = dir.absolutePath();
+        if (!dirs.contains(installDir))
+            dirs.append(installDir);
+    }
+    if (dirs.isEmpty())
+        dirs = firefoxDirectories();
+    QString error;
+    for (const QString &dir : dirs) {
+        QJsonObject record;
+        if (!writeFirefoxPolicy(dir, languages, &record, &error))
+            continue;
+        bool known = false;
+        for (const QJsonValue &value : d_->firefox) {
+            if (value.toObject().value(QStringLiteral("path")).toString() == record.value(QStringLiteral("path")).toString()) {
+                known = true;
+                break;
+            }
+        }
+        if (!known)
+            d_->firefox.append(record);
+    }
+    d_->save();
+    if (!error.isEmpty())
+        Logger::instance()->warn(QString::fromUtf8("Язык Firefox не записал: %1").arg(error));
+    else
+        Logger::instance()->info(QString::fromUtf8(
+            "Для сайтов язык браузера: %1. Окно Firefox остаётся как было. Откройте его заново.").arg(languages));
+#else
+    Q_UNUSED(languages);
+#endif
+}
+
+void PrivacyGuard::onExit(int generation, const QString &iana, const QString &ip, const QString &country,
+                          const QString &error)
 {
     if (generation != d_->probeGen)
         return;
@@ -858,17 +952,18 @@ void PrivacyGuard::onExit(int generation, const QString &iana, const QString &ip
                 const int next = ++d_->probeGen;
                 auto *probe = new ExitProbe(d_->hops, this);
                 QPointer<PrivacyGuard> self(this);
-                probe->done = [self, next](const QString &iana, const QString &ip, const QString &err) {
+                probe->done = [self, next](const QString &iana, const QString &ip, const QString &country, const QString &err) {
                     if (!self || next != self->d_->probeGen)
                         return;
                     self->d_->probeBusy = false;
-                    self->onExit(next, iana, ip, err);
+                    self->onExit(next, iana, ip, country, err);
                 };
                 probe->start();
             });
         }
         return;
     }
+    applyExitLanguage(country);
     const QString windows = windowsZoneForIana(iana.toUtf8());
     if (windows.isEmpty()) {
         Logger::instance()->warn(QString::fromUtf8("Для пояса %1 нет соответствия в Windows").arg(iana));
