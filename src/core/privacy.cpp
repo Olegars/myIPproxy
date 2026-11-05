@@ -550,6 +550,13 @@ bool writeFirefoxPolicy(const QString &dir, const QString &languages, QJsonObjec
     prefs.insert(QStringLiteral("network.trr.mode"), preferenceLock(3));
     prefs.insert(QStringLiteral("network.trr.uri"), preferenceLock(QStringLiteral("https://cloudflare-dns.com/dns-query")));
     prefs.insert(QStringLiteral("network.trr.bootstrapAddress"), preferenceLock(QStringLiteral("1.1.1.1")));
+    prefs.insert(QStringLiteral("doh-rollout.skipHeuristicsCheck"), preferenceLock(true));
+    QJsonObject doh;
+    doh.insert(QStringLiteral("Enabled"), true);
+    doh.insert(QStringLiteral("ProviderURL"), QStringLiteral("https://cloudflare-dns.com/dns-query"));
+    doh.insert(QStringLiteral("Locked"), true);
+    doh.insert(QStringLiteral("Fallback"), false);
+    policies.insert(QStringLiteral("DNSOverHTTPS"), doh);
     if (!languages.isEmpty())
         prefs.insert(QStringLiteral("intl.accept_languages"), preferenceLock(languages));
     policies.insert(QStringLiteral("Preferences"), prefs);
@@ -777,8 +784,30 @@ void PrivacyGuard::restoreTimezone()
 
 void PrivacyGuard::applyWebrtc()
 {
+#ifdef _WIN32
+    if (d_->webrtcReady) {
+        QStringList dirs;
+        for (const QJsonValue &value : d_->firefox) {
+            QDir dir = QFileInfo(value.toObject().value(QStringLiteral("path")).toString()).dir();
+            if (dir.dirName().compare(QLatin1String("distribution"), Qt::CaseInsensitive) != 0 || !dir.cdUp())
+                continue;
+            const QString installDir = dir.absolutePath();
+            if (!dirs.contains(installDir))
+                dirs.append(installDir);
+        }
+        if (dirs.isEmpty())
+            dirs = firefoxDirectories();
+        QString firefoxError;
+        for (const QString &dir : dirs) {
+            QJsonObject record;
+            writeFirefoxPolicy(dir, QString(), &record, &firefoxError);
+        }
+        return;
+    }
+#else
     if (d_->webrtcReady)
         return;
+#endif
 #ifdef _WIN32
     const HKEY hives[] = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     const char *hiveNames[] = {"HKCU", "HKLM"};

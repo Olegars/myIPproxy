@@ -189,7 +189,8 @@ bool PacketDivert::start()
     }
     unsigned error = 0;
     d_->run = true;
-    socketHandle_ = divert_open(library_, "(tcp or udp) and (event == CONNECT or event == CLOSE)", DIVERT_LAYER_SOCKET,
+    socketHandle_ = divert_open(library_, "(tcp or udp) and (event == BIND or event == CONNECT or event == CLOSE)",
+                                DIVERT_LAYER_SOCKET,
                                 DIVERT_FLAG_SNIFF | DIVERT_FLAG_RECV_ONLY, &error);
     if (socketHandle_)
         d_->socketsThread = std::thread([this] { socketLoop(); });
@@ -228,7 +229,7 @@ bool PacketDivert::start()
     d_->thread = std::thread([this] { loop(); });
     active_ = true;
     Logger::instance()->info(QString::fromUtf8(
-        "Перехват TCP через WinDivert, порт %1. Через прокси идут только программы из правил, остальной TCP не трогается. UDP браузеров в прокси режется, кроме DNS.")
+        "Перехват TCP через WinDivert, порт %1. Через прокси идут только программы из правил, остальной TCP не трогается. UDP и DNS браузеров в прокси режутся.")
                                  .arg(port_));
     return true;
 }
@@ -295,7 +296,7 @@ void PacketDivert::socketLoop()
             d_->sockets.remove(key);
             continue;
         }
-        if (event != 4 || pid == 0)
+        if ((event != 3 && event != 4) || pid == 0)
             continue;
         SocketNote note;
         note.pid = pid;
@@ -379,6 +380,8 @@ bool PacketDivert::onPacket(unsigned char *buffer, unsigned length, void *metaPt
         ProcInfo proc = socketProc(17, udpSrc, udpDst);
         if (proc.pid == 0)
             proc = processForUdp(udpSrc, family == 6, true);
+        if (proc.pid == 0)
+            proc = processForUdp(udpSrc, family != 6, true);
         if (proc.pid == 0 || proc.pid == d_->self)
             return false;
         if (udpDst == 53) {
